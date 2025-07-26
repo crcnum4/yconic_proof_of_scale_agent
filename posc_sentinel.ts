@@ -1,6 +1,7 @@
 // yc0n1c's Ambient PoSc Sentinel using Arcade's built-in Stripe tools
 import { Arcade } from "@arcadeai/arcadejs";
 import { savePoScResult } from "./db/savePoScResult";
+import { BrightDataService, type StartupMentions } from "./bright_data_service";
 
 // Initialize Arcade client
 const client = new Arcade();
@@ -25,10 +26,15 @@ interface RevenueMetrics {
 class PoScSentinel {
   private userId: string;
   private startupId: string;
+  private brightDataService: BrightDataService;
 
   constructor(userId: string, startupId: string) {
     this.userId = userId;
     this.startupId = startupId;
+    
+    // Initialize Bright Data service with mock API key
+    // In production, use actual Bright Data API key
+    this.brightDataService = new BrightDataService('mock_bright_data_api_key');
   }
 
   /**
@@ -371,25 +377,35 @@ class PoScSentinel {
       // 3. Evaluate milestones
       const event = this.evaluatePoScMilestones(metrics);
 
-      // 4. Store ALL data in MongoDB
+      // 4. Monitor startup with Bright Data scraping and sentiment analysis
+      console.log('\n🔍 Starting Bright Data monitoring...');
+      const startupMentions = await this.brightDataService.monitorStartup('yc0n1c');
+      
+      // 5. Get sentiment trends
+      const sentimentTrends = await this.brightDataService.getSentimentTrends('yc0n1c', 30);
+
+      // 6. Store ALL data in MongoDB (including scraping results)
       await savePoScResult({
         startupId: this.startupId,
         userId: this.userId,
         metrics,
-        event,
+        event: event || undefined,
         balance,
         transactions,
         customers,
         invoices,
+        startupMentions,
+        sentimentTrends,
         rawData: {
           balance,
           transactions,
           customers,
-          invoices
+          invoices,
+          scrapingResults: startupMentions
         }
       });
       
-      this.generateReport(event, metrics, balance);
+      this.generateReport(event, metrics, balance, startupMentions, sentimentTrends);
       
 
     } catch (error) {
@@ -404,7 +420,13 @@ class PoScSentinel {
   /**
    * Generate comprehensive report
    */
-  private generateReport(event: PoScEvent | null, metrics: RevenueMetrics, balance: any) {
+  private generateReport(
+    event: PoScEvent | null, 
+    metrics: RevenueMetrics, 
+    balance: any, 
+    startupMentions?: any, 
+    sentimentTrends?: any
+  ) {
     console.log("\n📋 POSC SENTINEL REPORT (Real Stripe Data)");
     console.log("=".repeat(50));
     
@@ -431,6 +453,25 @@ class PoScSentinel {
       console.log(`Pending: $${(balance.pending?.[0]?.amount || 0) / 100}`);
     } else {
       console.log("Balance information unavailable");
+    }
+
+    // Add Bright Data monitoring results
+    if (startupMentions) {
+      console.log(`\n🔍 BRIGHT DATA MONITORING RESULTS:`);
+      console.log(`📈 Total Mentions: ${startupMentions.totalMentions}`);
+      console.log(`✅ Positive Mentions: ${startupMentions.positiveMentions}`);
+      console.log(`❌ Negative Mentions: ${startupMentions.negativeMentions}`);
+      console.log(`😐 Neutral Mentions: ${startupMentions.neutralMentions}`);
+      console.log(`📊 Average Sentiment Score: ${startupMentions.averageSentimentScore.toFixed(3)}`);
+      console.log(`🔥 Trending Keywords: ${startupMentions.trendingKeywords.join(', ')}`);
+    }
+
+    if (sentimentTrends) {
+      console.log(`\n📈 SENTIMENT TRENDS (30 days):`);
+      console.log(`📊 Average Sentiment: ${sentimentTrends.averageSentiment}`);
+      console.log(`📈 Trend: ${sentimentTrends.sentimentTrend}`);
+      console.log(`📈 Mention Growth: ${sentimentTrends.mentionGrowth}%`);
+      console.log(`📈 Positive Growth: ${sentimentTrends.positiveGrowth}%`);
     }
 
     console.log("\n" + "=".repeat(50));
