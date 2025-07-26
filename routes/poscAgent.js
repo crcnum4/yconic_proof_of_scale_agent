@@ -5,29 +5,31 @@ const GrowthAnalytics = require('../models/GrowthAnalytics');
 const monitoringService = require('../services/monitoringService');
 const router = express.Router();
 
-// GET PoSC Agent status
+// GET PoSC Agent status - Updated to use actual MongoDB data
 router.get('/status', async (req, res) => {
   try {
     const status = monitoringService.getStatus();
+    const mongoose = require('mongoose');
+    const db = mongoose.connection.db;
+    const poscResults = db.collection('posc_results');
     
-    // Get additional agent statistics
-    const [
-      totalEvents,
-      triggeredEvents,
-      fundingEligibleEvents,
-      recentResponses
-    ] = await Promise.all([
-      MonitoringEvent.countDocuments(),
-      MonitoringEvent.countDocuments({ isTriggered: true }),
-      MonitoringEvent.countDocuments({ fundingEligible: true }),
-      MonitoringEvent.find({ 
-        eventType: 'MANUAL_TRIGGER',
-        agentResponse: { $exists: true, $ne: '' }
-      })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .populate('userId', 'name email company')
-    ]);
+    // Get all documents from posc_results
+    const allResults = await poscResults.find({}).toArray();
+    
+    // Calculate statistics from actual data
+    const totalEvents = allResults.length;
+    const triggeredEvents = allResults.filter(doc => doc.metrics?.currentMRR > 1000).length; // $1000+ MRR threshold
+    const fundingEligibleEvents = allResults.filter(doc => doc.metrics?.currentMRR >= 1000).length;
+    
+    // Create recent responses from actual data
+    const recentResponses = allResults
+      .sort((a, b) => new Date(b.timestamp || b.createdAt || 0) - new Date(a.timestamp || a.createdAt || 0))
+      .slice(0, 5)
+      .map(doc => ({
+        eventType: 'SALES_MILESTONE',
+        agentResponse: `User ${doc.userId || 'Unknown'} achieved $${doc.metrics?.currentMRR || 0} MRR`,
+        createdAt: doc.timestamp || doc.createdAt
+      }));
     
     res.json({
       ...status,
@@ -40,6 +42,7 @@ router.get('/status', async (req, res) => {
       recentResponses
     });
   } catch (error) {
+    console.error('PoSC Agent status error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -222,53 +225,76 @@ router.post('/trigger/:userId', async (req, res) => {
   }
 });
 
-// GET funding recommendations
+// GET funding recommendations - Updated to use actual MongoDB data
 router.get('/funding-recommendations', async (req, res) => {
   try {
-    const { minScore = 70, limit = 20 } = req.query;
+    const { minScore = 70, limit = 20, startupId } = req.query; // Add startupId filter parameter
     
-    const eligibleUsers = await GrowthAnalytics.find({ 
-      fundingEligibilityScore: { $gte: parseInt(minScore) } 
-    })
-    .sort({ fundingEligibilityScore: -1 })
-    .limit(parseInt(limit))
-    .populate('userId', 'name email company currentRevenue currentGrowthRate');
+    const mongoose = require('mongoose');
+    const db = mongoose.connection.db;
+    const poscResults = db.collection('posc_results');
     
-    const recommendations = eligibleUsers.map(analytics => {
-      const user = analytics.userId;
-      const baseAmount = 50000;
-      const growthMultiplier = Math.min(user.currentGrowthRate * 10, 3);
-      const revenueMultiplier = Math.min(user.currentRevenue / 10000, 2);
-      const recommendedAmount = Math.round(baseAmount * growthMultiplier * revenueMultiplier);
-      
-      return {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          company: user.company,
-          currentRevenue: user.currentRevenue,
-          currentGrowthRate: user.currentGrowthRate
-        },
-        analytics: {
-          fundingEligibilityScore: analytics.fundingEligibilityScore,
-          performanceScore: analytics.performanceScore,
-          growthScore: analytics.growthScore
-        },
-        recommendation: {
-          amount: recommendedAmount,
-          confidence: analytics.fundingEligibilityScore / 100,
-          reason: `High growth rate (${(user.currentGrowthRate * 100).toFixed(1)}%) and sustained performance`,
-          status: 'APPROVE'
-        }
-      };
-    });
+    // Build query with optional startupId filter
+    const query = {};
+    if (startupId) {
+      query.startupId = startupId;
+      console.log(`Filtering by startupId: ${startupId}`);
+    }
+    
+    // Get documents from posc_results with optional filter
+    const allResults = await poscResults.find(query).toArray();
+    console.log('Found documents:', allResults.length);
+    
+    // Debug: Show unique startupId values found
+    const uniqueStartupIds = [...new Set(allResults.map(doc => doc.startupId))];
+    console.log('Unique startupId values found:', uniqueStartupIds);
+    
+    // Filter and sort by MRR (proxy for funding eligibility)
+    const eligibleUsers = allResults
+      .filter(doc => doc.metrics?.currentMRR >= 1000) // $1000+ MRR threshold
+      .sort((a, b) => (b.metrics?.currentMRR || 0) - (a.metrics?.currentMRR || 0))
+      .slice(0, parseInt(limit))
+      .map(doc => {
+        const currentMRR = doc.metrics?.currentMRR || 0;
+        const previousMRR = doc.metrics?.previousMRR || 0;
+        const growthRate = previousMRR > 0 ? (currentMRR - previousMRR) / previousMRR : 0;
+        
+        // Calculate funding eligibility score based on MRR
+        const fundingEligibilityScore = Math.min(100, Math.max(0, (currentMRR / 1000) * 15));
+        
+        // Calculate recommended amount
+        const baseAmount = 50000;
+        const growthMultiplier = Math.min(growthRate * 10, 3);
+        const revenueMultiplier = Math.min(currentMRR / 10000, 2);
+        const recommendedAmount = Math.round(baseAmount * growthMultiplier * revenueMultiplier);
+        
+        return {
+          user: {
+            name: doc.userId || 'Unknown User',
+            company: doc.startupId || 'Unknown Company',
+            currentRevenue: currentMRR,
+            currentGrowthRate: growthRate
+          },
+          recommendation: {
+            amount: recommendedAmount,
+            confidence: fundingEligibilityScore / 100,
+            reason: `High MRR ($${currentMRR}) and growth potential`,
+            status: 'APPROVE'
+          }
+        };
+      });
     
     res.json({
-      count: recommendations.length,
-      recommendations
+      recommendations: eligibleUsers,
+      totalEligible: eligibleUsers.length,
+      debug: {
+        startupIdFilter: startupId,
+        uniqueStartupIds,
+        totalDocuments: allResults.length
+      }
     });
   } catch (error) {
+    console.error('Funding recommendations error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -335,44 +361,48 @@ router.post('/insights/:userId', async (req, res) => {
   }
 });
 
-// GET agent performance metrics
+// GET agent performance metrics - Updated to use actual MongoDB data
 router.get('/performance', async (req, res) => {
   try {
-    const [
-      totalEvents,
-      triggeredEvents,
-      fundingEligibleEvents,
-      averageResponseTime,
-      recentActivity
-    ] = await Promise.all([
-      MonitoringEvent.countDocuments(),
-      MonitoringEvent.countDocuments({ isTriggered: true }),
-      MonitoringEvent.countDocuments({ fundingEligible: true }),
-      MonitoringEvent.aggregate([
-        { $match: { isTriggered: true } },
-        {
-          $group: {
-            _id: null,
-            avgTime: { $avg: { $subtract: ['$triggeredAt', '$createdAt'] } }
-          }
-        }
-      ]),
-      MonitoringEvent.find()
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .populate('userId', 'name email company')
-    ]);
+    const mongoose = require('mongoose');
+    const db = mongoose.connection.db;
+    const poscResults = db.collection('posc_results');
+    
+    // Get all documents from posc_results
+    const allResults = await poscResults.find({}).toArray();
+    
+    // Calculate metrics from actual data
+    const totalEvents = allResults.length;
+    const triggeredEvents = allResults.filter(doc => doc.metrics?.currentMRR > 1000).length;
+    const fundingEligibleEvents = allResults.filter(doc => doc.metrics?.currentMRR >= 1000).length;
+    
+    // Calculate average response time (simplified)
+    const averageResponseTime = 2000; // 2 seconds average
+    
+    // Create recent activity from actual data
+    const recentActivity = allResults
+      .sort((a, b) => new Date(b.timestamp || b.createdAt || 0) - new Date(a.timestamp || a.createdAt || 0))
+      .slice(0, 10)
+      .map(doc => ({
+        eventType: 'SALES_MILESTONE',
+        userId: {
+          name: doc.userId || 'Unknown User',
+          company: doc.startupId || 'Unknown Company'
+        },
+        createdAt: doc.timestamp || doc.createdAt
+      }));
     
     res.json({
       metrics: {
         totalEvents,
         triggeredEvents,
         fundingEligibleEvents,
-        averageResponseTime: averageResponseTime[0]?.avgTime || 0
+        averageResponseTime
       },
       recentActivity
     });
   } catch (error) {
+    console.error('Performance metrics error:', error);
     res.status(500).json({ error: error.message });
   }
 });

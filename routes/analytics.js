@@ -2,6 +2,7 @@ const express = require('express');
 const GrowthAnalytics = require('../models/GrowthAnalytics');
 const User = require('../models/User');
 const MonitoringEvent = require('../models/MonitoringEvent');
+const mongoose = require('mongoose');
 const router = express.Router();
 
 // GET overall analytics
@@ -289,47 +290,180 @@ router.post('/calculate/:userId', async (req, res) => {
   }
 });
 
-// GET analytics dashboard
+// GET analytics dashboard - Updated to use actual MongoDB data
 router.get('/dashboard', async (req, res) => {
   try {
-    const [
+    const { startupId } = req.query; // Add startupId filter parameter
+    
+    console.log('🔍 Analytics Dashboard Request');
+    console.log('Query parameters:', req.query);
+    
+    // Query the actual posc_results collection
+    const db = mongoose.connection.db;
+    console.log('Database name:', db.databaseName);
+    console.log('Database connection state:', mongoose.connection.readyState);
+    
+    // List all collections to debug
+    const collections = await db.listCollections().toArray();
+    console.log('Available collections:', collections.map(c => c.name));
+    
+    const poscResults = db.collection('posc_results');
+    
+    // Build query with optional startupId filter
+    const query = {};
+    if (startupId) {
+      query.startupId = startupId;
+      console.log(`Filtering by startupId: ${startupId}`);
+    }
+    
+    console.log('Final query:', JSON.stringify(query));
+    
+    // Get documents from posc_results with optional filter
+    const allResults = await poscResults.find(query).toArray();
+    console.log('Found documents:', allResults.length);
+    
+    // Debug: Show unique startupId values found
+    const uniqueStartupIds = [...new Set(allResults.map(doc => doc.startupId))];
+    console.log('Unique startupId values found:', uniqueStartupIds);
+    
+    // Show first few documents for debugging
+    if (allResults.length > 0) {
+      console.log('First document sample:', JSON.stringify(allResults[0], null, 2));
+    }
+    
+    // Calculate metrics from actual data
+    const totalAnalytics = allResults.length;
+    const totalRevenue = allResults.reduce((sum, doc) => {
+      return sum + (doc.metrics?.currentMRR || 0);
+    }, 0);
+    
+    const totalBalance = allResults.reduce((sum, doc) => {
+      const availableBalance = doc.balance?.available?.[0]?.amount || 0;
+      return sum + availableBalance;
+    }, 0);
+    
+    // Calculate average funding score (simplified based on available data)
+    const averageFundingScore = totalAnalytics > 0 ? 
+      Math.min(100, Math.max(0, (totalRevenue / 10000) * 20)) : 0;
+    
+    // Create top performers from actual data
+    const topPerformers = allResults
+      .filter(doc => doc.metrics?.currentMRR > 0)
+      .sort((a, b) => (b.metrics?.currentMRR || 0) - (a.metrics?.currentMRR || 0))
+      .slice(0, 5)
+      .map(doc => ({
+        userId: {
+          name: doc.userId || 'Unknown User',
+          company: doc.startupId || 'Unknown Company',
+          currentRevenue: doc.metrics?.currentMRR || 0
+        },
+        performanceScore: Math.min(100, Math.max(0, (doc.metrics?.currentMRR / 1000) * 20)),
+        fundingEligibilityScore: Math.min(100, Math.max(0, (doc.metrics?.currentMRR / 1000) * 15))
+      }));
+    
+    // Create funding eligible users
+    const fundingEligibleUsers = allResults
+      .filter(doc => doc.metrics?.currentMRR >= 1000) // $1000+ MRR threshold
+      .map(doc => ({
+        userId: {
+          name: doc.userId || 'Unknown User',
+          company: doc.startupId || 'Unknown Company',
+          currentRevenue: doc.metrics?.currentMRR || 0
+        },
+        fundingEligibilityScore: Math.min(100, Math.max(0, (doc.metrics?.currentMRR / 1000) * 15))
+      }));
+    
+    console.log('Response metrics:', {
       totalAnalytics,
+      totalRevenue,
+      totalBalance,
       averageFundingScore,
-      topPerformers,
-      fundingEligibleUsers,
-      recentEvents,
-      growthTrends
-    ] = await Promise.all([
-      GrowthAnalytics.countDocuments(),
-      GrowthAnalytics.aggregate([
-        { $group: { _id: null, avgScore: { $avg: '$fundingEligibilityScore' } } }
-      ]),
-      GrowthAnalytics.find().sort({ performanceScore: -1 }).limit(5).populate('userId', 'name email company'),
-      GrowthAnalytics.find({ fundingEligibilityScore: { $gte: 70 } }).sort({ fundingEligibilityScore: -1 }).limit(5).populate('userId', 'name email company'),
-      MonitoringEvent.find().sort({ createdAt: -1 }).limit(10).populate('userId', 'name email company'),
-      GrowthAnalytics.aggregate([
-        {
-          $group: {
-            _id: '$revenueGrowth.trend',
-            count: { $sum: 1 }
-          }
-        }
-      ])
-    ]);
+      topPerformersCount: topPerformers.length,
+      fundingEligibleCount: fundingEligibleUsers.length
+    });
     
     res.json({
       overview: {
         totalAnalytics,
-        averageFundingScore: averageFundingScore[0]?.avgScore || 0,
+        averageFundingScore: Math.round(averageFundingScore),
         topPerformers: topPerformers.length,
         fundingEligibleUsers: fundingEligibleUsers.length
       },
       topPerformers,
       fundingEligibleUsers,
-      recentEvents,
-      growthTrends
+      totalRevenue,
+      totalBalance,
+      debug: {
+        startupIdFilter: startupId,
+        uniqueStartupIds,
+        totalDocuments: allResults.length
+      }
     });
   } catch (error) {
+    console.error('Analytics dashboard error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET top performers - Updated to use actual data
+router.get('/top-performers', async (req, res) => {
+  try {
+    const { limit = 10, metric = 'performanceScore' } = req.query;
+    
+    const db = mongoose.connection.db;
+    const poscResults = db.collection('posc_results');
+    
+    const allResults = await poscResults.find({}).toArray();
+    
+    // Sort by MRR (closest to performance metric)
+    const performers = allResults
+      .filter(doc => doc.metrics?.currentMRR > 0)
+      .sort((a, b) => (b.metrics?.currentMRR || 0) - (a.metrics?.currentMRR || 0))
+      .slice(0, parseInt(limit))
+      .map(doc => ({
+        userId: {
+          name: doc.userId || 'Unknown User',
+          company: doc.startupId || 'Unknown Company'
+        },
+        fundingEligibilityScore: Math.min(100, Math.max(0, (doc.metrics?.currentMRR / 1000) * 15))
+      }));
+    
+    res.json({
+      metric: 'currentMRR',
+      performers
+    });
+  } catch (error) {
+    console.error('Top performers error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET growth trends - Updated to use actual data
+router.get('/growth-trends', async (req, res) => {
+  try {
+    const { period = '30d' } = req.query;
+    
+    const db = mongoose.connection.db;
+    const poscResults = db.collection('posc_results');
+    
+    const allResults = await poscResults.find({}).toArray();
+    
+    // Calculate trends based on MRR growth
+    const trends = {
+      revenueGrowth: {
+        increasing: allResults.filter(doc => doc.metrics?.currentMRR > (doc.metrics?.previousMRR || 0)).length,
+        decreasing: allResults.filter(doc => doc.metrics?.currentMRR < (doc.metrics?.previousMRR || 0)).length,
+        stable: allResults.filter(doc => doc.metrics?.currentMRR === (doc.metrics?.previousMRR || 0)).length
+      }
+    };
+    
+    res.json({
+      period,
+      totalAnalytics: allResults.length,
+      trends
+    });
+  } catch (error) {
+    console.error('Growth trends error:', error);
     res.status(500).json({ error: error.message });
   }
 });
