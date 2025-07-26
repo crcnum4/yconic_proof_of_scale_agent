@@ -8,5 +8,16 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.2.12",
+    "@io-orkes/conductor-javascript": "^2.1.4",
+    "@mastra/core": "^0.11.1",
+    "dotenv": "^17.2.1",
+    "mongodb": "^6.18.0",
+    "mysql2": "^3.14.2",
+    "pg": "^8.16.3",
+    "ts-node": "^10.9.2",
+    "zod": "^4.0.10"
   }
 }
