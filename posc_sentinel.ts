@@ -1,5 +1,6 @@
 // yc0n1c's Ambient PoSc Sentinel using Arcade's built-in Stripe tools
 import { Arcade } from "@arcadeai/arcadejs";
+import { savePoScResult } from "./db/savePoScResult";
 
 // Initialize Arcade client
 const client = new Arcade();
@@ -343,8 +344,18 @@ class PoScSentinel {
     console.log("=".repeat(50));
 
     try {
-      // 1. Get balance information
+      // 1. Get ALL Stripe data
+      console.log("📊 Fetching ALL Stripe data from Arcade...");
       const balance = await this.getStripeBalance();
+      const transactions = await this.getStripeTransactions(100);
+      const customers = await this.getStripeCustomers(100);
+      const invoices = await this.getStripeInvoices(100);
+      
+      console.log("📊 Data fetched:");
+      console.log(`  💰 Balance: ${balance ? 'Available' : 'Not available'}`);
+      console.log(`  💳 Transactions: ${transactions.length}`);
+      console.log(`  👥 Customers: ${customers.length}`);
+      console.log(`  🧾 Invoices: ${invoices.length}`);
       
       // 2. Calculate PoSc metrics
       const metrics = await this.calculatePoScMetrics();
@@ -360,8 +371,26 @@ class PoScSentinel {
       // 3. Evaluate milestones
       const event = this.evaluatePoScMilestones(metrics);
 
-      // 4. Generate report
+      // 4. Store ALL data in MongoDB
+      await savePoScResult({
+        startupId: this.startupId,
+        userId: this.userId,
+        metrics,
+        event,
+        balance,
+        transactions,
+        customers,
+        invoices,
+        rawData: {
+          balance,
+          transactions,
+          customers,
+          invoices
+        }
+      });
+      
       this.generateReport(event, metrics, balance);
+      
 
     } catch (error) {
       console.error("❌ Error in PoSc monitoring:", error);
