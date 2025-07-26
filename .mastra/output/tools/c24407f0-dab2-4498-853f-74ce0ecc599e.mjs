@@ -1,19 +1,9 @@
-import { Agent } from "@mastra/core/agent";
-import { anthropic } from "@ai-sdk/anthropic";
-import { z } from "zod";
-import pg from "pg";
-import mysql from "mysql2/promise";
+import { createTool } from '@mastra/core';
+import { z } from 'zod';
+import pg from 'pg';
+import mysql from '/Users/cliffchoiniere/projects/posc_agent/node_modules/mysql2/promise.js';
 
-// Tool schemas
-const analyzeUserGrowthSchema = z.object({
-  dbType: z.enum(["postgres", "mysql"]),
-  connectionString: z.string(),
-  tableName: z.string().optional(),
-  daysToAnalyze: z.number().default(7)
-});
-
-// Database connection helper
-async function createDbConnection(dbType: "postgres" | "mysql", connectionString: string) {
+async function createDbConnection(dbType, connectionString) {
   if (dbType === "postgres") {
     const client = new pg.Client(connectionString);
     await client.connect();
@@ -23,78 +13,77 @@ async function createDbConnection(dbType: "postgres" | "mysql", connectionString
     return connection;
   }
 }
-
-// Clean tool implementation - only analyzes and returns data
-const analyzeUserGrowth = {
-  name: "analyzeUserGrowth",
-  description: "Analyze user growth metrics from database",
-  parameters: analyzeUserGrowthSchema,
-  execute: async ({ 
-    dbType, 
-    connectionString, 
-    tableName, 
-    daysToAnalyze = 7
-  }: z.infer<typeof analyzeUserGrowthSchema>) => {
+const analyzeUserGrowth = createTool({
+  id: "analyzeUserGrowth",
+  description: "Analyze user growth metrics from a database",
+  inputSchema: z.object({
+    dbType: z.enum(["postgres", "mysql"]).describe("Database type: postgres or mysql"),
+    connectionString: z.string().describe("Database connection string"),
+    tableName: z.string().optional().describe("Table name to query (optional - will auto-discover if not provided)"),
+    daysToAnalyze: z.number().default(7).describe("Number of days to analyze for growth")
+  }),
+  outputSchema: z.object({
+    newUsers: z.number().describe("Number of new users in the analyzed period"),
+    previousPeriodUsers: z.number().describe("Number of users in the previous period"),
+    growthRate: z.number().describe("Growth rate percentage"),
+    growthMultiplier: z.number().describe("Growth multiplier (e.g., 1.5 for 50% growth)"),
+    surge: z.boolean().describe("Whether a surge (>50% growth) was detected"),
+    startDate: z.string().describe("Start date of the analysis period"),
+    endDate: z.string().describe("End date of the analysis period"),
+    dailyBreakdown: z.array(z.object({
+      date: z.string(),
+      count: z.number()
+    })).optional().describe("Daily breakdown of user signups"),
+    dataSource: z.object({
+      dbType: z.enum(["postgres", "mysql"]),
+      tableName: z.string(),
+      dateColumn: z.string()
+    }).describe("Information about the data source")
+  }),
+  execute: async ({ context: { dbType, connectionString, tableName, daysToAnalyze = 7 } }) => {
     const db = await createDbConnection(dbType, connectionString);
-    
     try {
-      // Discover table if not provided
       let userTable = tableName;
       if (!userTable) {
-        let tables: string[] = [];
-        
+        let tables = [];
         if (dbType === "postgres") {
-          const result = await (db as pg.Client).query(`
+          const result = await db.query(`
             SELECT table_name 
             FROM information_schema.tables 
             WHERE table_schema = 'public' 
             AND table_type = 'BASE TABLE'
           `);
-          tables = result.rows.map(row => row.table_name);
+          tables = result.rows.map((row) => row.table_name);
         } else {
-          const [rows] = await (db as mysql.Connection).query(`
+          const [rows] = await db.query(`
             SELECT table_name 
             FROM information_schema.tables 
             WHERE table_schema = DATABASE()
-          `) as any;
-          tables = rows.map((row: any) => row.TABLE_NAME || row.table_name);
+          `);
+          tables = rows.map((row) => row.TABLE_NAME || row.table_name);
         }
-        
-        const userTableCandidates = tables.filter(table => 
-          table.toLowerCase().includes('user') || 
-          table.toLowerCase().includes('account') ||
-          table.toLowerCase().includes('member') ||
-          table.toLowerCase().includes('customer')
+        const userTableCandidates = tables.filter(
+          (table) => table.toLowerCase().includes("user") || table.toLowerCase().includes("account") || table.toLowerCase().includes("member") || table.toLowerCase().includes("customer")
         );
-        
         userTable = userTableCandidates[0];
         if (!userTable) {
           throw new Error("Could not identify users table. Please provide the table name explicitly.");
         }
       }
-      
-      // Identify date column
       let dateColumn = "created_at";
-      
       if (dbType === "postgres") {
-        const columnsResult = await (db as pg.Client).query(`
+        const columnsResult = await db.query(`
           SELECT column_name 
           FROM information_schema.columns 
           WHERE table_name = $1
         `, [userTable]);
-        
-        const columns = columnsResult.rows.map(row => row.column_name);
-        const dateColumns = columns.filter(col => 
-          col.includes('created') || 
-          col.includes('signup') || 
-          col.includes('registered') ||
-          col.includes('joined')
+        const columns = columnsResult.rows.map((row) => row.column_name);
+        const dateColumns = columns.filter(
+          (col) => col.includes("created") || col.includes("signup") || col.includes("registered") || col.includes("joined")
         );
         if (dateColumns.length > 0) {
           dateColumn = dateColumns[0];
         }
-        
-        // Query for user growth
         const query = `
           WITH daily_signups AS (
             SELECT 
@@ -123,19 +112,12 @@ const analyzeUserGrowth = {
             CURRENT_DATE - INTERVAL '${daysToAnalyze} days' as start_date,
             CURRENT_DATE as end_date
         `;
-        
-        const result = await (db as pg.Client).query(query);
+        const result = await db.query(query);
         const data = result.rows[0];
-        
         const newUsers = parseInt(data.recent_signups) || 0;
         const previousPeriodUsers = parseInt(data.previous_signups) || 0;
-        const growthRate = previousPeriodUsers > 0 
-          ? ((newUsers - previousPeriodUsers) / previousPeriodUsers * 100)
-          : 0;
-        const growthMultiplier = previousPeriodUsers > 0 
-          ? newUsers / previousPeriodUsers 
-          : 0;
-        
+        const growthRate = previousPeriodUsers > 0 ? (newUsers - previousPeriodUsers) / previousPeriodUsers * 100 : 0;
+        const growthMultiplier = previousPeriodUsers > 0 ? newUsers / previousPeriodUsers : 0;
         return {
           newUsers,
           previousPeriodUsers,
@@ -152,35 +134,26 @@ const analyzeUserGrowth = {
           }
         };
       } else {
-        // MySQL implementation
-        const [columns] = await (db as mysql.Connection).query(`
+        const [columns] = await db.query(`
           SELECT COLUMN_NAME 
           FROM INFORMATION_SCHEMA.COLUMNS 
           WHERE TABLE_NAME = ? AND TABLE_SCHEMA = DATABASE()
-        `, [userTable]) as any;
-        
-        const columnNames = columns.map((col: any) => col.COLUMN_NAME);
-        const dateColumns = columnNames.filter((col: string) => 
-          col.includes('created') || 
-          col.includes('signup') || 
-          col.includes('registered') ||
-          col.includes('joined')
+        `, [userTable]);
+        const columnNames = columns.map((col) => col.COLUMN_NAME);
+        const dateColumns = columnNames.filter(
+          (col) => col.includes("created") || col.includes("signup") || col.includes("registered") || col.includes("joined")
         );
         if (dateColumns.length > 0) {
           dateColumn = dateColumns[0];
         }
-        
-        // Query for user growth
-        const [[metrics]] = await (db as mysql.Connection).query(`
+        const [[metrics]] = await db.query(`
           SELECT 
             (SELECT COUNT(*) FROM ${userTable} WHERE ${dateColumn} >= DATE_SUB(CURDATE(), INTERVAL ${daysToAnalyze} DAY)) as recent_signups,
             (SELECT COUNT(*) FROM ${userTable} WHERE ${dateColumn} >= DATE_SUB(CURDATE(), INTERVAL ${daysToAnalyze * 2} DAY) AND ${dateColumn} < DATE_SUB(CURDATE(), INTERVAL ${daysToAnalyze} DAY)) as previous_signups,
             DATE_SUB(CURDATE(), INTERVAL ${daysToAnalyze} DAY) as start_date,
             CURDATE() as end_date
-        `) as any;
-        
-        // Get daily breakdown
-        const [dailyData] = await (db as mysql.Connection).query(`
+        `);
+        const [dailyData] = await db.query(`
           SELECT 
             DATE(${dateColumn}) as signup_date,
             COUNT(*) as daily_count
@@ -188,17 +161,11 @@ const analyzeUserGrowth = {
           WHERE ${dateColumn} >= DATE_SUB(CURDATE(), INTERVAL ${daysToAnalyze} DAY)
           GROUP BY DATE(${dateColumn})
           ORDER BY signup_date
-        `) as any;
-        
+        `);
         const newUsers = metrics.recent_signups || 0;
         const previousPeriodUsers = metrics.previous_signups || 0;
-        const growthRate = previousPeriodUsers > 0 
-          ? ((newUsers - previousPeriodUsers) / previousPeriodUsers * 100)
-          : 0;
-        const growthMultiplier = previousPeriodUsers > 0 
-          ? newUsers / previousPeriodUsers 
-          : 0;
-        
+        const growthRate = previousPeriodUsers > 0 ? (newUsers - previousPeriodUsers) / previousPeriodUsers * 100 : 0;
+        const growthMultiplier = previousPeriodUsers > 0 ? newUsers / previousPeriodUsers : 0;
         return {
           newUsers,
           previousPeriodUsers,
@@ -207,7 +174,7 @@ const analyzeUserGrowth = {
           surge: growthMultiplier > 1.5,
           startDate: new Date(metrics.start_date).toISOString(),
           endDate: new Date(metrics.end_date).toISOString(),
-          dailyBreakdown: dailyData.map((row: any) => ({
+          dailyBreakdown: dailyData.map((row) => ({
             date: new Date(row.signup_date).toISOString(),
             count: row.daily_count
           })),
@@ -220,40 +187,13 @@ const analyzeUserGrowth = {
       }
     } finally {
       if (dbType === "postgres") {
-        await (db as pg.Client).end();
+        await db.end();
       } else {
-        await (db as mysql.Connection).end();
+        await db.end();
       }
     }
   }
-};
-
-// Create the Clean User Surge Agent
-export const cleanSurgeAgent = new Agent({
-  name: "Clean User Surge Agent",
-  instructions: `You are a focused data analyst agent that retrieves and analyzes user growth metrics.
-
-Your single responsibility:
-- Connect to startup databases securely
-- Analyze user growth over specified periods
-- Return clean, structured metrics data
-
-You do NOT:
-- Store data in any database
-- Make decisions about triggers or alerts
-- Evaluate historical trends
-- Send notifications
-
-Focus on:
-- Accurate data retrieval
-- Proper date handling
-- Growth rate calculations
-- Surge detection (>50% growth)
-
-Always return raw metrics for downstream processing.`,
-  
-  model: anthropic("claude-3-5-sonnet-latest"),
-  tools: {
-    analyzeUserGrowth
-  }
 });
+
+export { analyzeUserGrowth };
+//# sourceMappingURL=c24407f0-dab2-4498-853f-74ce0ecc599e.mjs.map

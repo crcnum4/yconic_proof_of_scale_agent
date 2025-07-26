@@ -20,11 +20,16 @@ import {
   orkesConductorClient,
   TaskManager,
 } from "@io-orkes/conductor-javascript";
-import { cleanSurgeAgent } from "../mastra/agents/clean-surge-agent";
 import { ConnectQueryInput, ConnectQueryInputSchema, RawGrowthMetrics } from "../types/orkes-types";
 import dotenv from "dotenv";
+import axios, { isAxiosError } from "axios";
 
 dotenv.config();
+
+// Mastra API configuration
+const MASTRA_API_URL = process.env.MASTRA_API_URL || "http://localhost:4111";
+const MASTRA_ANALYST_AGENT = "poscAnalystAgent";
+const MASTRA_AGENT_ENDPOINT = `${MASTRA_API_URL}/api/agents/${MASTRA_ANALYST_AGENT}/generate`;
 
 async function test() {
   const clientPromise = orkesConductorClient({
@@ -46,23 +51,32 @@ async function test() {
         const input = ConnectQueryInputSchema.parse(inputData);
         console.log(`[${taskId}] Processing startup: ${input.startupId}`);
         
-        // Use the agent to analyze growth
-        const analysisResult = await cleanSurgeAgent.generate([{
-          role: "user",
-          content: `Analyze user growth:
-          - Database Type: ${input.dbCredentials.dbType}
-          - Connection String: ${input.dbCredentials.connectionString}
-          ${input.dbCredentials.tableName ? `- Table Name: ${input.dbCredentials.tableName}` : ''}
-          - Days to Analyze: ${input.daysToAnalyze || (input.analysisType === "monthly" ? 30 : 7)}
-          
-          Please analyze the user growth and return the metrics.`
-        }]);
+        // Call the Mastra agent via HTTP API
+        const agentPayload = {
+          messages: [{
+            role: "user",
+            content: `Analyze user growth:
+            {
+              dbType: ${input.dbCredentials.dbType}
+              connectionString: ${input.dbCredentials.connectionString}
+              tableName: ${input.dbCredentials.tableName}
+              daysToAnalyze: ${input.daysToAnalyze || (input.analysisType === "monthly" ? 30 : 7)}
+            }
+            Please analyze the user growth and return the metrics.`
+          }]
+        };
+        
+        console.log(`[${taskId}] Calling Mastra agent at: ${MASTRA_AGENT_ENDPOINT}`);
+        
+        const response = await axios.post(MASTRA_AGENT_ENDPOINT, agentPayload);
+        
+        const analysisResult = response.data;
         
         console.log(`[${taskId}] Agent response:`, analysisResult);
         
         // Parse the agent's response to extract metrics
         // The agent should return structured data we can parse
-        const metrics = parseAgentResponse(analysisResult.text, input);
+        const metrics = parseAgentResponse(analysisResult, input);
         
         console.log(`[${taskId}] Extracted metrics:`, metrics);
         
@@ -75,12 +89,16 @@ async function test() {
           status: "COMPLETED",
         };
       } catch (error) {
-        console.error(`[${taskId}] Error in connect_and_query_sql:`, error);
+        let errorText = error instanceof Error ? error.message : "Unknown error";
+        if (isAxiosError(error)) {
+          errorText = error.response?.data || errorText;
+        }
+        console.error(`[${taskId}] Error in connect_and_query_sql:`, errorText);
         
         return {
           outputData: {
             error: error instanceof Error ? error.message : "Unknown error",
-            startupId: inputData.startupId,
+            startupId: inputData?.startupId,
             timestamp: new Date().toISOString()
           },
           status: "FAILED",
