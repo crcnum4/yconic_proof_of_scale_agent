@@ -21,11 +21,14 @@ interface PoScResult {
   transactions?: any[];
   customers?: any[];
   invoices?: any[];
+  startupMentions?: any;
+  sentimentTrends?: any;
   rawData?: {
     balance?: any;
     transactions?: any[];
     customers?: any[];
     invoices?: any[];
+    scrapingResults?: any;
   };
 }
 

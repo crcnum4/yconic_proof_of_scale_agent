@@ -15,6 +15,7 @@
     "@arcadeai/arcadejs": "^1.9.0",
     "@io-orkes/conductor-javascript": "^2.1.4",
     "dotenv": "^17.2.1",
-    "mongodb": "^6.18.0"
+    "mongodb": "^6.18.0",
+    "axios": "^1.6.0"
   }
 }
