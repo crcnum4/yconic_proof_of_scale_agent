@@ -32,9 +32,10 @@ class PoScSentinel {
     this.userId = userId;
     this.startupId = startupId;
     
-    // Initialize Bright Data service with mock API key
-    // In production, use actual Bright Data API key
-    this.brightDataService = new BrightDataService('mock_bright_data_api_key');
+    // Initialize Bright Data service with hardcoded API key and customer ID
+    const apiKey = 'a01eb59fb076fd01db9c9edd664c08b69d3b0b8202b1a2684bca6cf07871aa4b';
+    const customerId = 'hl_290774ac'; // Your Bright Data Customer ID
+    this.brightDataService = new BrightDataService(apiKey, customerId);
   }
 
   /**
@@ -377,9 +378,9 @@ class PoScSentinel {
       // 3. Evaluate milestones
       const event = this.evaluatePoScMilestones(metrics);
 
-      // 4. Monitor startup with Bright Data scraping and sentiment analysis
-      console.log('\n🔍 Starting Bright Data monitoring...');
-      const startupMentions = await this.brightDataService.monitorStartup('yc0n1c');
+      // 4. Monitor startup with enhanced Bright Data integration
+      console.log('\n🔍 Starting enhanced Bright Data monitoring...');
+      const startupMentions = await this.brightDataService.scrapeWithExistingTools('yc0n1c', ['twitter', 'reddit', 'youtube', 'news']);
       
       // 5. Get sentiment trends
       const sentimentTrends = await this.brightDataService.getSentimentTrends('yc0n1c', 30);
@@ -455,15 +456,27 @@ class PoScSentinel {
       console.log("Balance information unavailable");
     }
 
-    // Add Bright Data monitoring results
+    // Add enhanced Bright Data monitoring results
     if (startupMentions) {
-      console.log(`\n🔍 BRIGHT DATA MONITORING RESULTS:`);
-      console.log(`📈 Total Mentions: ${startupMentions.totalMentions}`);
-      console.log(`✅ Positive Mentions: ${startupMentions.positiveMentions}`);
-      console.log(`❌ Negative Mentions: ${startupMentions.negativeMentions}`);
-      console.log(`😐 Neutral Mentions: ${startupMentions.neutralMentions}`);
-      console.log(`📊 Average Sentiment Score: ${startupMentions.averageSentimentScore.toFixed(3)}`);
-      console.log(`🔥 Trending Keywords: ${startupMentions.trendingKeywords.join(', ')}`);
+      console.log(`\n🔍 ENHANCED BRIGHT DATA MONITORING RESULTS:`);
+      console.log(`📈 Total Mentions: ${startupMentions.summary?.totalMentions || 0}`);
+      console.log(`✅ Positive Mentions: ${startupMentions.summary?.positiveMentions || 0}`);
+      console.log(`❌ Negative Mentions: ${startupMentions.summary?.negativeMentions || 0}`);
+      console.log(`😐 Neutral Mentions: ${startupMentions.summary?.neutralMentions || 0}`);
+      console.log(`📊 Average Sentiment Score: ${startupMentions.summary?.averageSentimentScore?.toFixed(3) || '0.000'}`);
+      console.log(`🔥 Trending Keywords: ${startupMentions.summary?.trendingKeywords?.join(', ') || 'None'}`);
+      
+      // Show results by platform
+      if (startupMentions.tools) {
+        console.log(`\n📱 Platform Breakdown:`);
+        Object.entries(startupMentions.tools).forEach(([platform, data]: [string, any]) => {
+          if (data && !data.error) {
+            console.log(`  ${platform}: ${data.mentions || data.discussions || data.videos || data.articles || 0} items (${data.sentiment?.sentiment || 'unknown'} sentiment)`);
+          } else if (data?.error) {
+            console.log(`  ${platform}: Error - ${data.error}`);
+          }
+        });
+      }
     }
 
     if (sentimentTrends) {
