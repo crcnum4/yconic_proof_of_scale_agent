@@ -1,6 +1,10 @@
 // yc0n1c's Ambient PoSc Sentinel using Arcade's built-in Stripe tools
 import { Arcade } from "@arcadeai/arcadejs";
 import { savePoScResult } from "./db/savePoScResult";
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 // Initialize Arcade client
 const client = new Arcade();

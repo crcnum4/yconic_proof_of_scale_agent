@@ -35,8 +35,8 @@ export async function savePoScResult(data: PoScResult) {
     console.log("=".repeat(60));
     
     // Connect to MongoDB
-    await client.connect();
-    const db = client.db("yconic_posc_agent");
+    const mongoClient = await client.connect();
+    const db = mongoClient.db("yconic_posc_agent");
     const collection = db.collection("posc_results");
     
     // Prepare data for storage with dollar conversions
